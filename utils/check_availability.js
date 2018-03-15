@@ -15,9 +15,12 @@
  * limitations under the License.
  */
 
-const Downloader = require('./ChromiumDownloader');
+const puppeteer = require('..');
 const https = require('https');
 const OMAHA_PROXY = 'https://omahaproxy.appspot.com/all.json';
+const SUPPORTER_PLATFORMS = ['linux', 'mac', 'win32', 'win64'];
+
+const fetchers = SUPPORTER_PLATFORMS.map(platform => puppeteer.createBrowserFetcher({platform}));
 
 const colors = {
   reset: '\x1b[0m',
@@ -71,7 +74,7 @@ async function checkOmahaProxyAvailability() {
     return;
   }
   const table = new Table([27, 7, 7, 7, 7]);
-  table.drawRow([''].concat(Downloader.supportedPlatforms()));
+  table.drawRow([''].concat(SUPPORTER_PLATFORMS));
   for (const platform of platforms) {
     // Trust only to the main platforms.
     if (platform.os !== 'mac' && platform.os !== 'win' && platform.os !== 'win64' && platform.os !== 'linux')
@@ -93,7 +96,7 @@ async function checkOmahaProxyAvailability() {
  */
 async function checkRangeAvailability(fromRevision, toRevision) {
   const table = new Table([10, 7, 7, 7, 7]);
-  table.drawRow([''].concat(Downloader.supportedPlatforms()));
+  table.drawRow([''].concat(SUPPORTER_PLATFORMS));
   const inc = fromRevision < toRevision ? 1 : -1;
   for (let revision = fromRevision; revision !== toRevision; revision += inc)
     await checkAndDrawRevisionAvailability(table, '', revision);
@@ -105,9 +108,7 @@ async function checkRangeAvailability(fromRevision, toRevision) {
  * @param {number} revision
  */
 async function checkAndDrawRevisionAvailability(table, name, revision) {
-  const promises = [];
-  for (const platform of Downloader.supportedPlatforms())
-    promises.push(Downloader.canDownloadRevision(platform, revision));
+  const promises = fetchers.map(fetcher => fetcher.canDownload(revision));
   const availability = await Promise.all(promises);
   const allAvailable = availability.every(e => !!e);
   const values = [name + ' ' + (allAvailable ? colors.green + revision + colors.reset : revision)];

@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+buildNode6IfNecessary();
+
 if (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD) {
   console.log('**INFO** Skipping Chromium download. "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD" environment variable was found.');
   return;
@@ -23,36 +25,44 @@ if (process.env.NPM_CONFIG_PUPPETEER_SKIP_CHROMIUM_DOWNLOAD || process.env.npm_c
   return;
 }
 
-const Downloader = require('./utils/ChromiumDownloader');
-const platform = Downloader.currentPlatform();
-const revision = require('./package').puppeteer.chromium_revision;
-const ProgressBar = require('progress');
+const downloadHost = process.env.PUPPETEER_DOWNLOAD_HOST || process.env.npm_config_puppeteer_download_host;
 
-const revisionInfo = Downloader.revisionInfo(platform, revision);
+const puppeteer = require('./index');
+const browserFetcher = puppeteer.createBrowserFetcher({ host: downloadHost });
+
+const revision = require('./package.json').puppeteer.chromium_revision;
+const revisionInfo = browserFetcher.revisionInfo(revision);
+
 // Do nothing if the revision is already downloaded.
-if (revisionInfo.downloaded)
+if (revisionInfo.local)
   return;
 
 // Override current environment proxy settings with npm configuration, if any.
 const NPM_HTTPS_PROXY = process.env.npm_config_https_proxy || process.env.npm_config_proxy;
 const NPM_HTTP_PROXY = process.env.npm_config_http_proxy || process.env.npm_config_proxy;
+const NPM_NO_PROXY = process.env.npm_config_no_proxy;
+
 if (NPM_HTTPS_PROXY)
   process.env.HTTPS_PROXY = NPM_HTTPS_PROXY;
 if (NPM_HTTP_PROXY)
   process.env.HTTP_PROXY = NPM_HTTP_PROXY;
+if (NPM_NO_PROXY)
+  process.env.NO_PROXY = NPM_NO_PROXY;
 
-const allRevisions = Downloader.downloadedRevisions();
-Downloader.downloadRevision(platform, revision, onProgress)
+browserFetcher.download(revisionInfo.revision, onProgress)
+    .then(() => browserFetcher.localRevisions())
     .then(onSuccess)
     .catch(onError);
 
 /**
+ * @param {!Array<string>}
  * @return {!Promise}
  */
-function onSuccess() {
+function onSuccess(localRevisions) {
   console.log('Chromium downloaded to ' + revisionInfo.folderPath);
+  localRevisions = localRevisions.filter(revision => revision !== revisionInfo.revision);
   // Remove previous chromium revisions.
-  const cleanupOldVersions = allRevisions.map(({platform, revision}) => Downloader.removeRevision(platform, revision));
+  const cleanupOldVersions = localRevisions.map(revision => browserFetcher.remove(revision));
   return Promise.all(cleanupOldVersions);
 }
 
@@ -66,15 +76,19 @@ function onError(error) {
 }
 
 let progressBar = null;
-function onProgress(bytesTotal, delta) {
+let lastDownloadedBytes = 0;
+function onProgress(downloadedBytes, totalBytes) {
   if (!progressBar) {
-    progressBar = new ProgressBar(`Downloading Chromium r${revision} - ${toMegabytes(bytesTotal)} [:bar] :percent :etas `, {
+    const ProgressBar = require('progress');
+    progressBar = new ProgressBar(`Downloading Chromium r${revision} - ${toMegabytes(totalBytes)} [:bar] :percent :etas `, {
       complete: '=',
       incomplete: ' ',
       width: 20,
-      total: bytesTotal,
+      total: totalBytes,
     });
   }
+  const delta = downloadedBytes - lastDownloadedBytes;
+  lastDownloadedBytes = downloadedBytes;
   progressBar.tick(delta);
 }
 
@@ -83,3 +97,24 @@ function toMegabytes(bytes) {
   return `${Math.round(mb * 10) / 10} Mb`;
 }
 
+function buildNode6IfNecessary() {
+  const fs = require('fs');
+  const path = require('path');
+
+  // if this package is installed from NPM, then it already has up-to-date node6
+  // folder.
+  if (!fs.existsSync(path.join('utils', 'node6-transform')))
+    return;
+  let asyncawait = true;
+  try {
+    new Function('async function test(){await 1}');
+  } catch (error) {
+    asyncawait = false;
+  }
+  // if async/await is supported, then node6 is not needed.
+  if (asyncawait)
+    return;
+  // Re-build node6/ folder.
+  console.log('Building Puppeteer for Node 6');
+  require(path.join(__dirname, 'utils', 'node6-transform'));
+}
